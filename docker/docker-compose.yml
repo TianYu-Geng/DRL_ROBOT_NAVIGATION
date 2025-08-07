@@ -1,0 +1,28 @@
+services:
+  drl-ws:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    stdin_open: true
+    tty: true
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: /bin/bash  # 默认交互式 shell
+    network_mode: host
+    working_dir: /home/user
+    environment:
+      - DISPLAY=${DISPLAY}
+      - ROS_WS=/home/user/drl_ws # 工作空间还为该万，建立的docker，需要修改下
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /dev:/dev
+      - ~/.ssh:/home/user/.ssh
+      - ..:/home/user/drl_ws/

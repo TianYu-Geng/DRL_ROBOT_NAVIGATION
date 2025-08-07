@@ -11,7 +11,13 @@ from torch.utils.tensorboard import SummaryWriter
 from replay_buffer import ReplayBuffer
 from velodyne_env import GazeboEnv
 
-
+'''
+evaluate() 是一个策略评估函数，它不会更新网络，
+只用当前训练好的 network 跑若干回合（eval_episodes），计算平均奖励和平均碰撞率，用来衡量策略性能。
+    network: 当前训练好的Actor网络
+    epoch: 当前训练的轮数
+    eval_episodes: 评估的回合数
+'''
 def evaluate(network, epoch, eval_episodes=10):
     avg_reward = 0.0
     col = 0
