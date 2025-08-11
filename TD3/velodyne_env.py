@@ -261,13 +261,8 @@ class GazeboEnv:
             else:
                 beta = 0 - beta
         theta = beta - angle
-        # 将角度限制在[-π, π]范围内
-        if theta > np.pi:
-            theta = np.pi - theta
-            theta = -np.pi - theta
-        if theta < -np.pi:
-            theta = -np.pi - theta
-            theta = np.pi - theta
+        # 【update: 2025-08-07】将角度限制在[-π, π]范围内
+        theta = (theta + np.pi) % (2 * np.pi) - np.pi
 
         # 检测是否到达目标
         if distance < GOAL_REACHED_DIST:
@@ -277,6 +272,7 @@ class GazeboEnv:
         # 构建状态向量：[激光雷达数据, 距离, 角度差, 线速度, 角速度]
         robot_state = [distance, theta, action[0], action[1]]
         state = np.append(laser_state, robot_state)
+        # target: 是否到达目标;collision: 是否碰撞;action: 当前动作;min_laser: 最小激光距离
         reward = self.get_reward(target, collision, action, min_laser)
         return state, reward, done, target
 

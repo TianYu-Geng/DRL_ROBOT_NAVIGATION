@@ -1,28 +1,54 @@
 services:
-  drl-ws:
-    build: 
+  drl-navigation:
+    build:
       context: .
       dockerfile: Dockerfile
+      args:
+        USERNAME: user
+        UID: 1000  # 如宿主不是1000，改成你的 id -u
+
+    container_name: drl-navigation
     stdin_open: true
     tty: true
-    privileged: true
+    privileged: true 
+
+    # ✅ 明确使用 NVIDIA 运行时
+    runtime: nvidia
+
     deploy:
       resources:
         reservations:
           devices:
-            - driver: nvidia
+            - driver: nvidia   # ✅ 仅允许 nvidia
               count: all
               capabilities: [gpu]
-    command: /bin/bash  # 默认交互式 shell
-    network_mode: host
-    working_dir: /home/user
+
     environment:
+      # ✅ 显式要求 NVIDIA
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
       - DISPLAY=${DISPLAY}
-      - ROS_WS=/home/user/drl_ws # 工作空间还为该万，建立的docker，需要修改下
+      - QT_X11_NO_MITSHM=1
+      - XDG_RUNTIME_DIR=/run/user/${UID:-1000}
+      - XAUTHORITY=/tmp/.docker.xauth
+      - ROS_WS=/home/user/drl_navigation
+
     volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${HOME}/.Xauthority:/tmp/.docker.xauth:ro
       - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /dev:/dev
-      - ~/.ssh:/home/user/.ssh
-      - ..:/home/user/drl_ws/
+      - ../:/home/user/drl_navigation:rw
+      - ${HOME}/.gazebo/models:/home/user/.gazebo/models:rw
+
+    network_mode: host
+    ipc: host
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'which roscore >/dev/null && which gzserver >/dev/null'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    command: bash
+    restart: unless-stopped

@@ -46,12 +46,15 @@ def evaluate(network, epoch, eval_episodes=10):
 
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
+        """
+        策略网络（Actor），输入状态，输出动作
+        """
         super(Actor, self).__init__()
 
-        self.layer_1 = nn.Linear(state_dim, 800)
-        self.layer_2 = nn.Linear(800, 600)
-        self.layer_3 = nn.Linear(600, action_dim)
-        self.tanh = nn.Tanh()
+        self.layer_1 = nn.Linear(state_dim, 800)  # 第一层
+        self.layer_2 = nn.Linear(800, 600)        # 第二层
+        self.layer_3 = nn.Linear(600, action_dim) # 输出层
+        self.tanh = nn.Tanh()                     # 输出归一化
 
     def forward(self, s):
         s = F.relu(self.layer_1(s))
@@ -62,19 +65,26 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
+        """
+        价值网络（Critic），输入状态和动作，输出Q值
+        TD3有两个独立的Critic分支
+        """
         super(Critic, self).__init__()
 
+        # 第一个Critic分支
         self.layer_1 = nn.Linear(state_dim, 800)
         self.layer_2_s = nn.Linear(800, 600)
         self.layer_2_a = nn.Linear(action_dim, 600)
         self.layer_3 = nn.Linear(600, 1)
 
+        # 第二个Critic分支
         self.layer_4 = nn.Linear(state_dim, 800)
         self.layer_5_s = nn.Linear(800, 600)
         self.layer_5_a = nn.Linear(action_dim, 600)
         self.layer_6 = nn.Linear(600, 1)
 
     def forward(self, s, a):
+        # 第一个Critic分支
         s1 = F.relu(self.layer_1(s))
         self.layer_2_s(s1)
         self.layer_2_a(a)
@@ -83,6 +93,7 @@ class Critic(nn.Module):
         s1 = F.relu(s11 + s12 + self.layer_2_a.bias.data)
         q1 = self.layer_3(s1)
 
+        # 第二个Critic分支
         s2 = F.relu(self.layer_4(s))
         self.layer_5_s(s2)
         self.layer_5_a(a)
@@ -93,31 +104,36 @@ class Critic(nn.Module):
         return q1, q2
 
 
-# TD3 network
+# TD3网络封装
 class TD3(object):
     def __init__(self, state_dim, action_dim, max_action):
-        # Initialize the Actor network
+        """
+        初始化TD3，包含Actor和两个Critic网络及其目标网络
+        """
+        # 初始化Actor网络和目标网络
         self.actor = Actor(state_dim, action_dim).to(device)
         self.actor_target = Actor(state_dim, action_dim).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters())
 
-        # Initialize the Critic networks
+        # 初始化Critic网络和目标网络
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = Critic(state_dim, action_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
 
         self.max_action = max_action
-        self.writer = SummaryWriter()
+        self.writer = SummaryWriter()  # tensorboard日志
         self.iter_count = 0
 
     def get_action(self, state):
-        # Function to get the action from the actor
+        """
+        根据当前状态获取动作
+        """
         state = torch.Tensor(state.reshape(1, -1)).to(device)
         return self.actor(state).cpu().data.numpy().flatten()
 
-    # training cycle
+    # 训练循环
     def train(
         self,
         replay_buffer,
@@ -133,7 +149,7 @@ class TD3(object):
         max_Q = -inf
         av_loss = 0
         for it in range(iterations):
-            # sample a batch from the replay buffer
+            # 从经验回放池采样一批数据
             (
                 batch_states,
                 batch_actions,
@@ -147,54 +163,52 @@ class TD3(object):
             reward = torch.Tensor(batch_rewards).to(device)
             done = torch.Tensor(batch_dones).to(device)
 
-            # Obtain the estimated action from the next state by using the actor-target
+            # 用actor_target预测下一个动作
             next_action = self.actor_target(next_state)
 
-            # Add noise to the action
+            # 给动作加噪声（策略平滑）
             noise = torch.Tensor(batch_actions).data.normal_(0, policy_noise).to(device)
             noise = noise.clamp(-noise_clip, noise_clip)
             next_action = (next_action + noise).clamp(-self.max_action, self.max_action)
 
-            # Calculate the Q values from the critic-target network for the next state-action pair
+            # 用critic_target计算下一个状态-动作的Q值
             target_Q1, target_Q2 = self.critic_target(next_state, next_action)
 
-            # Select the minimal Q value from the 2 calculated values
+            # 取两个Q值的较小者，防止过估计
             target_Q = torch.min(target_Q1, target_Q2)
             av_Q += torch.mean(target_Q)
             max_Q = max(max_Q, torch.max(target_Q))
-            # Calculate the final Q value from the target network parameters by using Bellman equation
+            # Bellman方程计算目标Q值
             target_Q = reward + ((1 - done) * discount * target_Q).detach()
 
-            # Get the Q values of the basis networks with the current parameters
+            # 用当前critic计算当前Q值
             current_Q1, current_Q2 = self.critic(state, action)
 
-            # Calculate the loss between the current Q value and the target Q value
+            # 计算损失
             loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
 
-            # Perform the gradient descent
+            # Critic网络反向传播
             self.critic_optimizer.zero_grad()
             loss.backward()
             self.critic_optimizer.step()
 
+            # 每隔policy_freq步更新一次Actor和目标网络
             if it % policy_freq == 0:
-                # Maximize the actor output value by performing gradient descent on negative Q values
-                # (essentially perform gradient ascent)
+                # Actor损失为-Q，梯度上升
                 actor_grad, _ = self.critic(state, self.actor(state))
                 actor_grad = -actor_grad.mean()
                 self.actor_optimizer.zero_grad()
                 actor_grad.backward()
                 self.actor_optimizer.step()
 
-                # Use soft update to update the actor-target network parameters by
-                # infusing small amount of current parameters
+                # 软更新Actor目标网络
                 for param, target_param in zip(
                     self.actor.parameters(), self.actor_target.parameters()
                 ):
                     target_param.data.copy_(
                         tau * param.data + (1 - tau) * target_param.data
                     )
-                # Use soft update to update the critic-target network parameters by infusing
-                # small amount of current parameters
+                # 软更新Critic目标网络
                 for param, target_param in zip(
                     self.critic.parameters(), self.critic_target.parameters()
                 ):
@@ -204,7 +218,7 @@ class TD3(object):
 
             av_loss += loss
         self.iter_count += 1
-        # Write new values for tensorboard
+        # 写入tensorboard
         self.writer.add_scalar("loss", av_loss / iterations, self.iter_count)
         self.writer.add_scalar("Av. Q", av_Q / iterations, self.iter_count)
         self.writer.add_scalar("Max. Q", max_Q, self.iter_count)
@@ -222,50 +236,49 @@ class TD3(object):
         )
 
 
-# Set the parameters for the implementation
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # cuda or cpu
-seed = 0  # Random seed number
-eval_freq = 5e3  # After how many steps to perform the evaluation
-max_ep = 500  # maximum number of steps per episode
-eval_ep = 10  # number of episodes for evaluation
-max_timesteps = 5e6  # Maximum number of steps to perform
-expl_noise = 1  # Initial exploration noise starting value in range [expl_min ... 1]
+# 设置训练参数
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 选择cuda或cpu
+seed = 0  # 随机种子
+eval_freq = 5e3  # 每隔多少步评估一次
+max_ep = 500  # 每个episode最大步数
+eval_ep = 10  # 每次评估的回合数
+max_timesteps = 5e6  # 总训练步数
+expl_noise = 1  # 初始探索噪声
 expl_decay_steps = (
-    500000  # Number of steps over which the initial exploration noise will decay over
+    500000  # 探索噪声衰减步数
 )
-expl_min = 0.1  # Exploration noise after the decay in range [0...expl_noise]
-batch_size = 40  # Size of the mini-batch
-discount = 0.99999  # Discount factor to calculate the discounted future reward (should be close to 1)
-tau = 0.005  # Soft target update variable (should be close to 0)
-policy_noise = 0.2  # Added noise for exploration
-noise_clip = 0.5  # Maximum clamping values of the noise
-policy_freq = 2  # Frequency of Actor network updates
-buffer_size = 1e6  # Maximum size of the buffer
-file_name = "TD3_velodyne"  # name of the file to store the policy
-save_model = True  # Weather to save the model or not
-load_model = False  # Weather to load a stored model
-random_near_obstacle = True  # To take random actions near obstacles or not
+expl_min = 0.1  # 最小探索噪声
+batch_size = 40  # mini-batch大小
+discount = 0.99999  # 折扣因子
+tau = 0.005  # 软更新系数
+policy_noise = 0.2  # 策略噪声
+noise_clip = 0.5  # 噪声裁剪
+policy_freq = 2  # Actor更新频率
+buffer_size = 1e6  # 经验池最大容量
+file_name = "TD3_velodyne"  # 模型文件名
+save_model = True  # 是否保存模型
+load_model = False  # 是否加载已有模型
+random_near_obstacle = True  # 是否在障碍物附近随机动作
 
-# Create the network storage folders
+# 创建结果和模型保存文件夹
 if not os.path.exists("./results"):
     os.makedirs("./results")
 if save_model and not os.path.exists("./pytorch_models"):
     os.makedirs("./pytorch_models")
 
-# Create the training environment
-environment_dim = 20
-robot_dim = 4
+# 创建训练环境
+environment_dim = 20  # 激光雷达维度
+robot_dim = 4         # 机器人自身状态维度
 env = GazeboEnv("multi_robot_scenario.launch", environment_dim)
 time.sleep(5)
 torch.manual_seed(seed)
 np.random.seed(seed)
-state_dim = environment_dim + robot_dim
-action_dim = 2
+state_dim = environment_dim + robot_dim  # 状态空间总维度
+action_dim = 2                          # 动作空间维度
 max_action = 1
 
-# Create the network
+# 创建TD3网络和经验回放池
 network = TD3(state_dim, action_dim, max_action)
-# Create a replay buffer
 replay_buffer = ReplayBuffer(buffer_size, seed)
 if load_model:
     try:
@@ -275,7 +288,7 @@ if load_model:
             "Could not load the stored model parameters, initializing training with random parameters"
         )
 
-# Create evaluation data store
+# 创建评估结果存储
 evaluations = []
 
 timestep = 0
@@ -287,10 +300,10 @@ epoch = 1
 count_rand_actions = 0
 random_action = []
 
-# Begin the training loop
+# 开始训练主循环
 while timestep < max_timesteps:
 
-    # On termination of episode
+    # 回合结束，训练网络
     if done:
         if timestep != 0:
             network.train(
@@ -304,6 +317,7 @@ while timestep < max_timesteps:
                 policy_freq,
             )
 
+        # 定期评估并保存模型
         if timesteps_since_eval >= eval_freq:
             print("Validating")
             timesteps_since_eval %= eval_freq
@@ -321,18 +335,17 @@ while timestep < max_timesteps:
         episode_timesteps = 0
         episode_num += 1
 
-    # add some exploration noise
+    # 探索噪声衰减
     if expl_noise > expl_min:
         expl_noise = expl_noise - ((1 - expl_min) / expl_decay_steps)
 
+    # 选取动作并加噪声
     action = network.get_action(np.array(state))
     action = (action + np.random.normal(0, expl_noise, size=action_dim)).clip(
         -max_action, max_action
     )
 
-    # If the robot is facing an obstacle, randomly force it to take a consistent random action.
-    # This is done to increase exploration in situations near obstacles.
-    # Training can also be performed without it
+    # 如果靠近障碍物，随机采取一段时间的随机动作，增强探索
     if random_near_obstacle:
         if (
             np.random.uniform(0, 1) > 0.85
@@ -347,23 +360,23 @@ while timestep < max_timesteps:
             action = random_action
             action[0] = -1
 
-    # Update action to fall in range [0,1] for linear velocity and [-1,1] for angular velocity
+    # 线速度归一化到[0,1]，角速度保持[-1,1]
     a_in = [(action[0] + 1) / 2, action[1]]
     next_state, reward, done, target = env.step(a_in)
     done_bool = 0 if episode_timesteps + 1 == max_ep else int(done)
     done = 1 if episode_timesteps + 1 == max_ep else int(done)
     episode_reward += reward
 
-    # Save the tuple in replay buffer
+    # 保存经验到回放池
     replay_buffer.add(state, action, reward, done_bool, next_state)
 
-    # Update the counters
+    # 更新计数器和状态
     state = next_state
     episode_timesteps += 1
     timestep += 1
     timesteps_since_eval += 1
 
-# After the training is done, evaluate the network and save it
+# 训练结束后，评估并保存模型
 evaluations.append(evaluate(network=network, epoch=epoch, eval_episodes=eval_ep))
 if save_model:
     network.save("%s" % file_name, directory="./pytorch_models")
